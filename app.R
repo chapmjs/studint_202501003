@@ -1,7 +1,7 @@
 # Student Interactions — Minimal Viable Product (R + Shiny + MySQL)
 # -------------------------------------------------------------------
 # This is a single-file Shiny app (app.R) you can deploy to shinyapps.io.
-# It uses: DBI, RMariaDB, pool, bslib, DT, shinyvalidate.
+# It uses: DBI, RMariaDB, pool, bslib, DT, shinyvalidate, shinyjs.
 #
 # ✅ What it does:
 # - Add/edit students
@@ -27,7 +27,20 @@ suppressPackageStartupMessages({
   library(RMariaDB)
   library(DT)
   library(shinyvalidate)
+  library(shinyjs)
 })
+
+# ---- Small UI helpers ----
+# Simple datetime input built from two text inputs (keeps deps minimal)
+datetimeInput <- function(inputId, label, value = Sys.time()) {
+  tagList(
+    tags$label(label, `for` = inputId),
+    div(class = "d-flex gap-2",
+        textInput(paste0(inputId, "_date"), NULL, format(as.Date(value), "%Y-%m-%d"), placeholder = "YYYY-MM-DD"),
+        textInput(paste0(inputId, "_time"), NULL, format(as.POSIXct(value), "%H:%M"), placeholder = "HH:MM")
+    )
+  )
+}
 
 # ---- DB Pool ----
 get_db_pool <- function() {
@@ -148,7 +161,9 @@ ui <- navbarPage(
   theme = app_theme,
   id = "main_nav",
   header = tagList(
-    tags$style(HTML(".sticky-save{position:sticky;bottom:0;background:#fff;padding:0.5rem;border-top:1px solid #eee;}\n .required::after{content:' *';color:#d33;}"))
+    useShinyjs(),
+    tags$style(HTML(".sticky-save{position:sticky;bottom:0;background:#fff;padding:0.5rem;border-top:1px solid #eee;}
+ .required::after{content:' *';color:#d33;}"))
   ),
 
   # Dashboard
@@ -203,17 +218,23 @@ server <- function(input, output, session) {
   observeEvent(input$go_new_interaction, updateNavbarPage(session, "main_nav", "New Interaction"))
 
   # --- Dashboard: Today’s Interactions ---
-  todays <- reactivePoll(10000, session,
+  todays <- reactivePoll(
+    intervalMillis = 10000,
+    session = session,
     checkFunc = function() Sys.time(),
-    valueFunc = function() fetch_todays_interactions(pool))
+    valueFunc = function() fetch_todays_interactions(pool)
+  )
 
   output$tbl_today <- renderDT({
     dat <- todays()
     if (nrow(dat)) {
       dat$occurred_at <- format(as.POSIXct(dat$occurred_at, tz = "UTC"), "%Y-%m-%d %H:%M UTC")
+      dat$Name <- paste(dat$first_name, dat$last_name)
+      dat <- dat[, c("occurred_at", "Name", "place", "notes")]
+      names(dat) <- c("When (UTC)", "Student", "Place", "Notes")
     }
     datatable(dat, rownames = FALSE,
-              options = list(pageLength = 10, order = list(list(1, 'desc'))))
+              options = list(pageLength = 10, order = list(list(0, 'desc'))))
   })
 
   # --- Students: Directory + modal detail ---
@@ -229,21 +250,12 @@ server <- function(input, output, session) {
     dat$View <- sprintf('<button class="btn btn-sm btn-outline-primary view-btn" data-id="%s">View</button>', dat$id)
     show <- dat[, c("Name", "major", "Grad", "hometown", "email", "phone", "View")]
     datatable(show, escape = FALSE, selection = "none", rownames = FALSE,
-              options = list(pageLength = 25))
-  })
-
-  observe({
-    proxy <- dataTableProxy("tbl_students")
-    observeEvent(input$tbl_students_rows_current, ignoreInit = TRUE, {
-      # no-op; ensures proxy exists
-    })
-
-    # JS event capture for view buttons
-    session$onFlushed(function() {
-      runjs("$('#tbl_students').on('click', '.view-btn', function(){
-               Shiny.setInputValue('view_student_id', $(this).data('id'), {priority: 'event'});
-             });")
-    }, once = TRUE)
+              options = list(pageLength = 25), callback = JS(
+                "table.on('click', 'button.view-btn', function(){",
+                "  var id = $(this).data('id');",
+                "  Shiny.setInputValue('view_student_id', id, {priority: 'event'});",
+                "});"
+              ))
   })
 
   observeEvent(input$view_student_id, {
@@ -313,7 +325,9 @@ server <- function(input, output, session) {
   iv_student <- InputValidator$new()
   iv_student$add_rule("s_first", sv_required())
   iv_student$add_rule("s_last", sv_required())
-  iv_student$add_rule("s_email", ~ if (nzchar(.)) sv_email()(.) else NULL)
+  # Email is optional, but if provided must be valid
+  iv_student$add_rule("s_email", sv_optional())
+  iv_student$add_rule("s_email", sv_email())
 
   observeEvent(input$save_student, {
     iv_student$enable()
@@ -349,12 +363,15 @@ server <- function(input, output, session) {
   })
 
   # --- New Interaction Form ---
-  student_choices <- reactivePoll(15000, session,
+  student_choices <- reactivePoll(
+    intervalMillis = 15000,
+    session = session,
     checkFunc = function() Sys.time(),
     valueFunc = function() {
       df <- dbGetQuery(pool, "SELECT id, first_name, last_name FROM students ORDER BY last_name, first_name LIMIT 1000")
       setNames(df$id, paste(df$first_name, df$last_name))
-    })
+    }
+  )
 
   output$interaction_form <- renderUI({
     tagList(
@@ -364,16 +381,6 @@ server <- function(input, output, session) {
           selectizeInput("i_student_id", label = tagList(span("Student", class = "required")), choices = student_choices(), options = list(placeholder = "Search student..."))
         ),
         div(class = "col-md-3",
-          datetimeInput <- function(inputId, label, value = Sys.time()) {
-            # Simple datetime using two inputs to avoid extra deps
-            tagList(
-              tags$label(label, `for` = inputId),
-              div(class = "d-flex gap-2",
-                textInput(paste0(inputId, "_date"), NULL, format(as.Date(value), "%Y-%m-%d"), placeholder = "YYYY-MM-DD"),
-                textInput(paste0(inputId, "_time"), NULL, format(as.POSIXct(value), "%H:%M"), placeholder = "HH:MM")
-              )
-            )
-          },
           datetimeInput("i_when", "Date & Time", Sys.time())
         ),
         div(class = "col-md-3",
@@ -426,3 +433,52 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui, server)
+
+
+# ---------------------------
+# MySQL Schema (run once)
+# ---------------------------
+# Save the following as schema.sql and run it on your MySQL instance.
+#
+# CREATE TABLE IF NOT EXISTS students (
+#   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+#   first_name VARCHAR(100) NOT NULL,
+#   last_name  VARCHAR(100) NOT NULL,
+#   phone VARCHAR(25) NULL,
+#   email VARCHAR(255) NULL UNIQUE,
+#   grad_month TINYINT NULL,
+#   grad_year SMALLINT NULL,
+#   hometown VARCHAR(255) NULL,
+#   major VARCHAR(120) NULL,
+#   linkedin_url VARCHAR(255) NULL,
+#   instagram_handle VARCHAR(120) NULL,
+#   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+#   updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+#   INDEX idx_students_name (last_name, first_name),
+#   INDEX idx_students_major (major),
+#   INDEX idx_students_grad (grad_year, grad_month)
+# ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+#
+# CREATE TABLE IF NOT EXISTS interactions (
+#   id BIGINT AUTO_INCREMENT PRIMARY KEY,
+#   student_id BIGINT NOT NULL,
+#   occurred_at DATETIME NOT NULL,
+#   place VARCHAR(120) NULL,
+#   notes TEXT NOT NULL,
+#   created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+#   INDEX idx_interactions_student_time (student_id, occurred_at),
+#   CONSTRAINT fk_interactions_student FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
+# ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+#
+# -- Optional: seed a test student
+# INSERT INTO students (first_name, last_name, email, major, grad_month, grad_year)
+# VALUES ('Test','Student','test@example.com','Supply Chain',12,2026);
+#
+# ---------------------------
+# Deployment Notes
+# ---------------------------
+# 1) Commit app.R to a GitHub repo (for versioning). This is for source control only.
+# 2) In shinyapps.io: create a new application and deploy from RStudio (rsconnect) or CLI.
+# 3) In shinyapps.io app settings → Environment Variables: set DB_HOST, DB_PORT, DB_USER, DB_PASS, DB_NAME.
+# 4) Open security: if needed, add shinymanager for a login gate (post-MVP).
+# 5) Verify connectivity: ensure the shinyapps.io egress IPs are allowed in your DB provider’s firewall.
