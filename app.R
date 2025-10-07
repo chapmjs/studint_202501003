@@ -27,14 +27,13 @@ suppressPackageStartupMessages({
   library(RMariaDB)
   library(DT)
   library(shinyvalidate)
-  library(shinyjs)
-})
+  })
 
 # ---- Small UI helpers ----
 # Simple datetime input built from two text inputs (keeps deps minimal)
 datetimeInput <- function(inputId, label, value = Sys.time()) {
   tagList(
-    tags$label(label, `for` = inputId),
+    tags$label(label, class = "form-label"),
     div(class = "d-flex gap-2",
         textInput(paste0(inputId, "_date"), NULL, format(as.Date(value), "%Y-%m-%d"), placeholder = "YYYY-MM-DD"),
         textInput(paste0(inputId, "_time"), NULL, format(as.POSIXct(value), "%H:%M"), placeholder = "HH:MM")
@@ -161,8 +160,7 @@ ui <- navbarPage(
   theme = app_theme,
   id = "main_nav",
   header = tagList(
-    useShinyjs(),
-    tags$style(HTML(".sticky-save{position:sticky;bottom:0;background:#fff;padding:0.5rem;border-top:1px solid #eee;}
+        tags$style(HTML(".sticky-save{position:sticky;bottom:0;background:#fff;padding:0.5rem;border-top:1px solid #eee;}
  .required::after{content:' *';color:#d33;}"))
   ),
 
@@ -219,10 +217,11 @@ server <- function(input, output, session) {
 
   # --- Dashboard: Today’s Interactions ---
   todays <- reactivePoll(
-    intervalMillis = 10000,
-    session = session,
-    checkFunc = function() Sys.time(),
-    valueFunc = function() fetch_todays_interactions(pool)
+  10000,
+  session,
+  function() Sys.time(),
+  function() fetch_todays_interactions(pool)
+)
   )
 
   output$tbl_today <- renderDT({
@@ -364,11 +363,14 @@ server <- function(input, output, session) {
 
   # --- New Interaction Form ---
   student_choices <- reactivePoll(
-    intervalMillis = 15000,
-    session = session,
-    checkFunc = function() Sys.time(),
-    valueFunc = function() {
-      df <- dbGetQuery(pool, "SELECT id, first_name, last_name FROM students ORDER BY last_name, first_name LIMIT 1000")
+  15000,
+  session,
+  function() Sys.time(),
+  function() {
+    df <- dbGetQuery(pool, "SELECT id, first_name, last_name FROM students ORDER BY last_name, first_name LIMIT 1000")
+    setNames(df$id, paste(df$first_name, df$last_name))
+  }
+)
       setNames(df$id, paste(df$first_name, df$last_name))
     }
   )
