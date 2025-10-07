@@ -216,25 +216,23 @@ server <- function(input, output, session) {
   observeEvent(input$go_new_interaction, updateNavbarPage(session, "main_nav", "New Interaction"))
 
   # --- Dashboard: Today’s Interactions ---
-  todays <- reactivePoll(
-  10000,
-  session,
-  function() Sys.time(),
-  function() fetch_todays_interactions(pool)
+  # Refresh dashboard table every 10s without reactivePoll (avoids parser quirks)
+get_today <- function() fetch_todays_interactions(pool)
 )
   )
 
   output$tbl_today <- renderDT({
-    dat <- todays()
-    if (nrow(dat)) {
-      dat$occurred_at <- format(as.POSIXct(dat$occurred_at, tz = "UTC"), "%Y-%m-%d %H:%M UTC")
-      dat$Name <- paste(dat$first_name, dat$last_name)
-      dat <- dat[, c("occurred_at", "Name", "place", "notes")]
-      names(dat) <- c("When (UTC)", "Student", "Place", "Notes")
-    }
-    datatable(dat, rownames = FALSE,
-              options = list(pageLength = 10, order = list(list(0, 'desc'))))
-  })
+  invalidateLater(10000, session)
+  dat <- get_today()
+  if (nrow(dat)) {
+    dat$occurred_at <- format(as.POSIXct(dat$occurred_at, tz = "UTC"), "%Y-%m-%d %H:%M UTC")
+    dat$Name <- paste(dat$first_name, dat$last_name)
+    dat <- dat[, c("occurred_at", "Name", "place", "notes")]
+    names(dat) <- c("When (UTC)", "Student", "Place", "Notes")
+  }
+  datatable(dat, rownames = FALSE,
+            options = list(pageLength = 10, order = list(list(0, 'desc'))))
+})
 
   # --- Students: Directory + modal detail ---
   students_data <- eventReactive(input$do_search, {
@@ -362,12 +360,12 @@ server <- function(input, output, session) {
   })
 
   # --- New Interaction Form ---
-  student_choices <- reactivePoll(
-  15000,
-  session,
-  function() Sys.time(),
-  function() {
-    df <- dbGetQuery(pool, "SELECT id, first_name, last_name FROM students ORDER BY last_name, first_name LIMIT 1000")
+  # Refresh student choices every 15s without reactivePoll
+student_choices <- reactive({
+  invalidateLater(15000, session)
+  df <- dbGetQuery(pool, "SELECT id, first_name, last_name FROM students ORDER BY last_name, first_name LIMIT 1000")
+  setNames(df$id, paste(df$first_name, df$last_name))
+})
     setNames(df$id, paste(df$first_name, df$last_name))
   }
 )
